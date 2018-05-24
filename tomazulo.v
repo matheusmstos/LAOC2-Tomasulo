@@ -67,17 +67,23 @@ module uf_mul_divisao(operacao,clock, reg1, reg2, done, result);
 
 endmodule
 
-
-module pc(pcatual, clock, pcatualizado);
+//******** CONTADOR DE INSTRUÇÕES **********	
+module pc(pcatual, clock, disbalePC pcatualizado);
 	input pcatual, clock;
-	output reg pcatualizado;
+	input disablePC;
+	output reg [2:0] pcatualizado;
+	
+	initial begin 
+		pcatualizado = 2'b00;
+	end
 
-	always@(posedge clock) begin
+	always@(posedge clock & posedge disbalePC) begin
 		pcatualizado <= pcatual + 1'b1;
 	end
 
 endmodule
 
+// ******** BANCO DE REGISTRADORES ********
 module banco_registradores(valor, wren, op, clock, saida);
 
 	input clock;
@@ -109,20 +115,89 @@ module banco_registradores(valor, wren, op, clock, saida);
 
 endmodule
 
-module instrucoes(posicao, instrucoes);
-
+//******* FILA DE INSTRUÇÔES *********
+module instrucoes(clock, PC_address, soma_cheio, mul_cheio, disablePC, instruction);
+	
+	input clock;
+	input [2:0] PC_address;
+	input soma_cheio;
+	input mul_cheio;
+	
+	output reg disablePC;
+	output reg [15:0] Q;
+	
 	reg [7:0] instrucao[15:0];
-	                      //op      reg3     reg2     reg1
-	assign instrucao[0] = {4'b0000, 4'b0001, 4'b0010, 4'b0011};
-	assign instrucao[1] = {4'b0010, 4'b0100, 4'b0101, 4'b0110};
-	assign instrucao[2] = {4'b0001, 4'b0001, 4'b0010, 4'b0011};
-	assign instrucao[3] = {4'b0000, 4'b0111, 4'b0001, 4'b0010};
-	assign instrucao[4] = {4'b0011, 4'b0110, 4'b0100, 4'b0101};
-	assign instrucao[5] = {4'b0011, 4'b0001, 4'b0110, 4'b0111};
-	assign instrucao[6] = {4'b0001, 4'b0001, 4'b0010, 4'b0011};
-	assign instrucao[7] = {4'b0010, 4'b0001, 4'b0010, 4'b0011};
+	initial begin 
+		disablePC = 1'b0;
+	
+	   //              op       reg3     reg2     reg1
+		instrucao[0] = {4'b0000, 4'b0001, 4'b0010, 4'b0011};
+		instrucao[1] = {4'b0010, 4'b0100, 4'b0101, 4'b0110};
+		instrucao[2] = {4'b0001, 4'b0001, 4'b0010, 4'b0011};
+		instrucao[3] = {4'b0000, 4'b0111, 4'b0001, 4'b0010};
+		instrucao[4] = {4'b0011, 4'b0110, 4'b0100, 4'b0101};
+		instrucao[5] = {4'b0011, 4'b0001, 4'b0110, 4'b0111};
+		instrucao[6] = {4'b0001, 4'b0001, 4'b0010, 4'b0011};
+		instrucao[7] = {4'b0010, 4'b0001, 4'b0010, 4'b0011};
+	
+	end
+	
+	always @(posedge clock) begin
+		Q = instrucao[PC_address];
+		
+		case(Q[15:12])
+			0000, 0001:
+				if (soma_cheio)	//Estacao de reserva cheia
+				begin
+					disablePC = 1;
+				end
+				else
+				begin
+					disablePC = 0;
+				end
+			0010, 0011:
+				if (mul_cheio)
+				begin
+					disablePC = 1;
+				end
+				else
+				begin
+					disablePC = 0;
+				end
+		endcase	
+	end
 
 endmodule
+
+//******* SELETOR *********
+module seletor(clock, instruction, add_station, mul_station, opcode);
+	input clock;
+	input [15:0] instruction;
+	
+	output reg	add_station;
+	output reg 	mul_station;
+	output reg opcode;
+	
+	always @(posedge clock) begin
+		case(instruction[15:12])
+			4'b0000, 4'b0001: // add/sub
+			begin
+				add_station = 1;
+				mul_station = 0;
+				opcode = instruction;
+			end
+			4'b0010, 4'b0011: // mul/div
+			begin
+				mul_station = 1;
+				add_station = 0;
+				opcode = instruction;
+			end
+		endcase
+	end
+
+endmodule
+
+// ???????????????????
 
 module ID(clock, instrucao, op, reg1, reg2, reg3);
 
@@ -140,20 +215,61 @@ module ID(clock, instrucao, op, reg1, reg2, reg3);
 
 endmodule
 
-module estacao_reserva_somasub(op, Vj, Vk, Qj, Qk, clock, Busy, CDBarbiter);
+//********* ESTAÇÃO DE RESERVA **********
+module estacao_reserva_somasub(op, Vj, Vk, Qj, Qk, clock, Busy, CDBarbiter, cheio);
 
-	input [3:0] op, Vk, Vj, Qj, Qk;
+	input clock;
+	input CDB_tag;
+	input CDB_valor;
+	
 	output reg [1:0] Busy [0:0];
 	output reg [3:0] CDBarbiter;
+	output reg [1:0]cheio;
+	
+	reg [31:0] estacao [2:0];
 
-	reg [31:0] er [2:0];
+	assign [31:28] estacao [linha] = op;
+	assign [27:24] estacao [linha] = Vj;
+	assign [23:20] estacao [linha] = Vk;
+	assign [19:16] estacao [linha] = Qj;
+	assign [15:12] estacao [linha] = Qk;
+	/*
+	op 		-> 31:28
+	tag_Vj 	-> 27
+	Vj 		-> 26:23
+	tag_Vk 	-> 22
+	Vk 		-> 21:18
+	tag_Qj 	-> 17
+	Qj 		-> 16:13
+	tag_Qk 	-> 12
+	Qk 		-> 11:8	
+	
+	*/
+	
+	initial begin
+		estacao[0] 16'b0;
+		estacao[1] 16'b0;
+		estacao[2] 16'b0;
+	end
+	
+	if(estacao[0][17] == CDB_tag) begin
+	end
+	if(estacao[0][12] == CDB_tag) begin
+	end
+	
+	if(estacao[0][17] == CDB_tag) begin
+	end
+	if(estacao[0][12] == CDB_tag) begin
+	end
+	
+	if(estacao[0][17] == CDB_tag) begin
+	end
+	if(estacao[0][12] == CDB_tag) begin
+	end
+	
 
-	assign [31:28] er [linha] = op;
-	assign [27:24] er [linha] = Vj;
-	assign [23:20] er [linha] = Vk;
-	assign [19:16] er [linha] = Qj;
-	assign [15:12] er [linha] = Qk;
-
+	if(cheio = 2'11) begin 
+		
 
 
 
@@ -165,10 +281,10 @@ module estacao_reserva_muldiv(op, Vj, Vk, Qj, Qk, clock, Busy, CDBarbiter);
 	output reg [1:0] Busy [0:0];
 	output reg [3:0] CDBarbiter;
 
-	reg [31:0] er [2:0];
+	reg [31:0] e_reserva [2:0];
+	reg cheio;
 
-
-	assign [31:28] er [linha]  = op;
+	assign [31:28] er [linha] = op;
 	assign [27:24] er [linha] = Vj;
 	assign [23:20] er [linha] = Vk;
 	assign [19:16] er [linha] = Qj;
